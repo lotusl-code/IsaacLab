@@ -33,6 +33,7 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import parse_env_cfg
 
 # PLACEHOLDER: Extension template (do not remove this comment)
+import agile.rl_env.configs  # noqa: F401
 
 
 def main():

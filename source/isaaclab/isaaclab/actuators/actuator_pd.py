@@ -245,10 +245,8 @@ class DCMotor(IdealPDActuator):
     def __init__(self, cfg: DCMotorCfg, *args, **kwargs):
         super().__init__(cfg, *args, **kwargs)
         # parse configuration
-        if self.cfg.saturation_effort is not None:
-            self._saturation_effort = self.cfg.saturation_effort
-        else:
-            self._saturation_effort = torch.inf
+        self._saturation_effort = self._parse_joint_parameter(self.cfg.saturation_effort, torch.inf)
+
         # prepare joint vel buffer for max effort computation
         self._joint_vel = torch.zeros_like(self.computed_effort)
         # create buffer for zeros effort

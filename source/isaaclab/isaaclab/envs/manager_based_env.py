@@ -221,6 +221,8 @@ class ManagerBasedEnv:
         return {
             "observations": self.observation_manager.get_IO_descriptors,
             "actions": self.action_manager.get_IO_descriptors,
+            "articulations": export_articulations_data(self),
+            "scene": export_scene_data(self),
         }
 
     """
