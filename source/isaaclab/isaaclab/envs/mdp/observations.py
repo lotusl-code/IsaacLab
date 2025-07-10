@@ -29,6 +29,8 @@ from isaaclab.envs.utils.io_descriptors import (
     record_body_names,
     record_dtype,
     record_joint_names,
+    record_joint_pos_offsets,
+    record_joint_vel_offsets,
     record_shape,
 )
 
@@ -198,7 +200,9 @@ def joint_pos(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("
 
 
 @generic_io_descriptor(
-    observation_type="JointState", on_inspect=[record_joint_names, record_dtype, record_shape], units="rad"
+    observation_type="JointState",
+    on_inspect=[record_joint_names, record_dtype, record_shape, record_joint_pos_offsets],
+    units="rad",
 )
 def joint_pos_rel(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     """The joint positions of the asset w.r.t. the default joint positions.
@@ -241,7 +245,9 @@ def joint_vel(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("
 
 
 @generic_io_descriptor(
-    observation_type="JointState", on_inspect=[record_joint_names, record_dtype, record_shape], units="rad/s"
+    observation_type="JointState",
+    on_inspect=[record_joint_names, record_dtype, record_shape, record_joint_vel_offsets],
+    units="rad/s",
 )
 def joint_vel_rel(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")):
     """The joint velocities of the asset w.r.t. the default joint velocities.
@@ -315,6 +321,21 @@ def imu_orientation(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntit
     asset: Imu = env.scene[asset_cfg.name]
     # return the orientation quaternion
     return asset.data.quat_w
+
+
+def imu_projected_gravity(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("imu")) -> torch.Tensor:
+    """Imu sensor orientation w.r.t the env.scene.origin.
+
+    Args:
+        env: The environment.
+        asset_cfg: The SceneEntity associated with an Imu sensor.
+
+    Returns:
+        Gravity projected on imu_frame, shape of torch.tensor is (num_env,3).
+    """
+
+    asset: Imu = env.scene[asset_cfg.name]
+    return asset.data.projected_gravity_b
 
 
 def imu_ang_vel(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("imu")) -> torch.Tensor:

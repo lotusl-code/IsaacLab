@@ -15,7 +15,7 @@ from prettytable import PrettyTable
 from typing import TYPE_CHECKING
 from tensordict.tensordict import TensorDict
 
-from isaaclab.utils import class_to_dict, modifiers
+from isaaclab.utils import class_to_dict, modifiers, noise
 from isaaclab.utils.buffers import CircularBuffer
 
 
@@ -228,16 +228,17 @@ class ObservationManager(ManagerBase):
         return self._group_obs_concatenate
 
     @property
-    def get_IO_descriptors(self):
+    def get_IO_descriptors(self, group_names_to_export: list[str] = ["policy"]):
         """Get the IO descriptors for the observation manager.
 
         Returns:
             A dictionary with keys as the group names and values as the IO descriptors.
         """
 
-        data = []
+        group_data = {}
 
         for group_name in self._group_obs_term_names:
+            group_data[group_name] = []
             # check ig group name is valid
             if group_name not in self._group_obs_term_names:
                 raise ValueError(
@@ -263,26 +264,31 @@ class ObservationManager(ManagerBase):
                         if k in ["modifiers", "clip", "scale", "history_length", "flatten_history_dim"]:
                             overloads[k] = v
                     desc.update(overloads)
-                    data.append(desc)
+                    group_data[group_name].append(desc)
                 except Exception as e:
                     print(f"Error getting IO descriptor for term '{term_name}' in group '{group_name}': {e}")
         # Format the data for YAML export
         formatted_data = {}
-        for item in data:
-            name = item.pop("name")
-            formatted_item = {"overloads": {}, "extras": item.pop("extras")}
-            for k, v in item.items():
-                # Check if v is a tuple and convert to list
-                if isinstance(v, tuple):
-                    v = list(v)
-                if k in ["scale", "clip", "history_length", "flatten_history_dim"]:
-                    formatted_item["overloads"][k] = v
-                elif k in ["modifiers", "description", "units"]:
-                    formatted_item["extras"][k] = v
-                else:
-                    formatted_item[k] = v
-            formatted_data[name] = formatted_item
-
+        for group_name, data in group_data.items():
+            formatted_data[group_name] = []
+            for item in data:
+                name = item.pop("name")
+                formatted_item = {"name": name, "overloads": {}, "extras": item.pop("extras")}
+                for k, v in item.items():
+                    # Check if v is a tuple and convert to list
+                    if isinstance(v, tuple):
+                        v = list(v)
+                    # Check if v is a tensor and convert to list
+                    if isinstance(v, torch.Tensor):
+                        v = v.detach().cpu().numpy().tolist()
+                    if k in ["scale", "clip", "history_length", "flatten_history_dim"]:
+                        formatted_item["overloads"][k] = v
+                    elif k in ["modifiers", "description", "units"]:
+                        formatted_item["extras"][k] = v
+                    else:
+                        formatted_item[k] = v
+                formatted_data[group_name].append(formatted_item)
+        formatted_data = {k: v for k, v in formatted_data.items() if k in group_names_to_export}
         return formatted_data
 
     """
@@ -299,7 +305,7 @@ class ObservationManager(ManagerBase):
                 if term_name in self._group_obs_term_history_buffer[group_name]:
                     self._group_obs_term_history_buffer[group_name][term_name].reset(batch_ids=env_ids)
         # call all modifiers that are classes
-        for mod in self._group_obs_class_modifiers:
+        for mod in self._group_obs_class_instances:
             mod.reset(env_ids=env_ids)
 
         # nothing to log here
@@ -380,8 +386,10 @@ class ObservationManager(ManagerBase):
             if term_cfg.modifiers is not None:
                 for modifier in term_cfg.modifiers:
                     obs = modifier.func(obs, **modifier.params)
-            if term_cfg.noise:
+            if isinstance(term_cfg.noise, noise.NoiseCfg):
                 obs = term_cfg.noise.func(obs, term_cfg.noise)
+            elif isinstance(term_cfg.noise, noise.NoiseModelCfg) and term_cfg.noise.func is not None:
+                obs = term_cfg.noise.func(obs)
             if term_cfg.clip:
                 obs = obs.clip_(min=term_cfg.clip[0], max=term_cfg.clip[1])
             if term_cfg.scale is not None:
@@ -444,9 +452,9 @@ class ObservationManager(ManagerBase):
         self._group_obs_concatenate_dim: dict[str, int] = dict()
 
         self._group_obs_term_history_buffer: dict[str, dict] = dict()
-        # create a list to store modifiers that are classes
+        # create a list to store classes instances, e.g., for modifiers and noise models
         # we store it as a separate list to only call reset on them and prevent unnecessary calls
-        self._group_obs_class_modifiers: list[modifiers.ModifierBase] = list()
+        self._group_obs_class_instances: list[modifiers.ModifierBase | noise.NoiseModel] = list()
 
         # make sure the simulation is playing since we compute obs dims which needs asset quantities
         if not self._env.sim.is_playing():
@@ -557,7 +565,7 @@ class ObservationManager(ManagerBase):
                                 mod_cfg.func = mod_cfg.func(cfg=mod_cfg, data_dim=obs_dims, device=self._env.device)
 
                                 # add to list of class modifiers
-                                self._group_obs_class_modifiers.append(mod_cfg.func)
+                                self._group_obs_class_instances.append(mod_cfg.func)
                         else:
                             raise TypeError(
                                 f"Modifier configuration '{mod_cfg}' of observation term '{term_name}' is not of"
@@ -586,6 +594,20 @@ class ObservationManager(ManagerBase):
                                     f" mandatory parameters: {args_without_defaults[1:]}"
                                     f" and optional parameters: {args_with_defaults}, but received: {term_params}."
                                 )
+
+                # prepare noise model classes
+                if term_cfg.noise is not None and isinstance(term_cfg.noise, noise.NoiseModelCfg):
+                    noise_model_cls = term_cfg.noise.class_type
+                    if not issubclass(noise_model_cls, noise.NoiseModel):
+                        raise TypeError(
+                            f"Class type for observation term '{term_name}' NoiseModelCfg"
+                            f" is not a subclass of 'NoiseModel'. Received: '{type(noise_model_cls)}'."
+                        )
+                    # initialize func to be the noise model class instance
+                    term_cfg.noise.func = noise_model_cls(
+                        term_cfg.noise, num_envs=self._env.num_envs, device=self._env.device
+                    )
+                    self._group_obs_class_instances.append(term_cfg.noise.func)
 
                 # create history buffers and calculate history term dimensions
                 if term_cfg.history_length > 0:
