@@ -55,10 +55,9 @@ class ManagerBasedRLEnvCfg(ManagerBasedEnvCfg):
     """
 
     max_episode_length_offset_s: float = 0.0
-    """Offset to the episode length in seconds.
+    """Maximum random offset to the episode length (in seconds).
 
-    This is used to add a small offset to the episode length to avoid the case where the episode length is exactly
-    equal to the episode length in steps.
+    This is used to initialize the episode length with a small random offset to avoid termination synchronization across environments.
     """
 
     # environment settings
