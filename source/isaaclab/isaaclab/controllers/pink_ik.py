@@ -21,6 +21,8 @@ from pink import solve_ik
 from pink.configuration import Configuration
 from pinocchio.robot_wrapper import RobotWrapper
 
+import isaaclab.utils.math as math_utils
+
 from .pink_ik_cfg import PinkIKControllerCfg
 
 
@@ -77,6 +79,28 @@ class PinkIKController:
             Reordered array.
         """
         return [input_array[i] for i in reordering_array]
+
+    def get_end_effector_pose(self, frame_name: str):
+        """Get the end-effector pose (position and orientation) for a given frame.
+
+        Args:
+            frame_name: Name of the end-effector frame (e.g., "end_effector", "tool0", etc.)
+
+        Returns:
+            Tuple of (position, quaternion) where:
+            - position: numpy array [x, y, z] in meters
+            - quaternion: numpy array [w, x, y, z]
+        """
+        # Get the transform from the frame to world coordinates
+        transform = self.pink_configuration.get_transform_frame_to_world(frame_name)
+
+        # Extract position (translation)
+        position = transform.translation
+
+        # Convert rotation matrix to quaternion in [w, x, y, z] format
+        quat = math_utils.quat_from_matrix(torch.tensor(transform.rotation))
+
+        return position, quat
 
     def initialize(self):
         """Initialize the internals of the controller.

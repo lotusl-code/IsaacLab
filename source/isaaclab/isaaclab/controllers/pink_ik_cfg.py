@@ -34,6 +34,9 @@ class PinkIKControllerCfg:
     """The number of hand joints in the robot. The action space for the controller contains the pose_dim(7)*num_controlled_frames + num_hand_joints.
     The last num_hand_joints values of the action are the hand joint angles."""
 
+    relative_pose_action_space: bool = False
+    """If True, the action space is relative to the current end-effector position. If False, the action space is absolute."""
+
     variable_input_tasks: list[FrameTask] = MISSING
     """
     A list of tasks for the Pink IK controller. These tasks are controllable by the env action.

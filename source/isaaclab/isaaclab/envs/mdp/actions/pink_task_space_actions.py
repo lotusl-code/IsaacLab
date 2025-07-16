@@ -118,7 +118,10 @@ class PinkInverseKinematicsAction(ActionTerm):
     def action_dim(self) -> int:
         """Dimension of the action space (based on number of tasks and pose dimension)."""
         # The tasks for all the controllers are the same, hence just using the first one to calculate the action_dim
-        return len(self._ik_controllers[0].cfg.variable_input_tasks) * self.pose_dim + self.hand_joint_dim
+        if self.cfg.controller.relative_pose_action_space:
+            return len(self._ik_controllers[0].cfg.variable_input_tasks) * 6 + self.hand_joint_dim
+        else:
+            return len(self._ik_controllers[0].cfg.variable_input_tasks) * self.pose_dim + self.hand_joint_dim
 
     @property
     def raw_actions(self) -> torch.Tensor:
@@ -147,46 +150,74 @@ class PinkInverseKinematicsAction(ActionTerm):
         # Make a copy of actions before modifying so that raw actions are not modified
         actions_clone = actions.clone()
 
-        # Extract hand joint positions (last 22 values)
-        self._target_hand_joint_positions = actions_clone[:, -self.hand_joint_dim :]
+        # Extract hand joint positions (last hand_joint_dim values)
+        if self.hand_joint_dim > 0:
+            self._target_hand_joint_positions = actions_clone[:, -self.hand_joint_dim :]
+        else:
+            # Create empty tensor with correct shape when no hand joints
+            self._target_hand_joint_positions = torch.empty(self.num_envs, 0, device=self.device)
 
-        # The action tensor provides the desired pose of the controlled_frame with respect to the env origin frame
-        # But the pink IK controller expects the desired pose of the controlled_frame with respect to the base_link_frame
-        # So we need to transform the desired pose of the controlled_frame to be with respect to the base_link_frame
+        if self.cfg.controller.relative_pose_action_space:
+            for env_index, ik_controller in enumerate(self._ik_controllers):
+                for task_index, task in enumerate(ik_controller.cfg.variable_input_tasks):
+                    # Get the current end-effector pose
+                    target = task.transform_target_to_world
+                    position_delta = actions_clone[env_index, task_index * 6 : task_index * 6 + self.position_dim]
+                    quat_delta = actions_clone[env_index, task_index * 6 + self.position_dim : (task_index + 1) * 6]
+                    current_position, current_quat = ik_controller.get_end_effector_pose(task.frame)
+                    # Convert current_position to tensor for addition with position_delta
+                    current_position_tensor = torch.tensor(current_position, device=self.device)
+                    target.translation = (current_position_tensor + position_delta).cpu().numpy()
+                    # Proper quaternion multiplication using math utilities
+                    # Convert current quaternion to tensor for quaternion multiplication
+                    current_quat_tensor = torch.tensor(current_quat, device=self.device)
+                    # Convert quat_delta from roll-pitch-yaw to quaternion
+                    # quat_delta contains [roll, pitch, yaw] in radians
+                    quat_delta_quat = math_utils.quat_from_euler_xyz(quat_delta[0], quat_delta[1], quat_delta[2])
+                    # Multiply quaternions
+                    combined_quat = math_utils.quat_mul(current_quat_tensor, quat_delta_quat)
+                    # Convert back to rotation matrix
+                    target.rotation = math_utils.matrix_from_quat(combined_quat).cpu().numpy()
+                    task.set_target(target)
 
-        # Get the controlled_frame pose wrt to the env origin frame
-        all_controlled_frames_in_env_origin = []
-        # The contrllers for all envs are the same, hence just using the first one to get the number of variable_input_tasks
-        for task_index in range(len(self._ik_controllers[0].cfg.variable_input_tasks)):
-            controlled_frame_in_env_origin_pos = actions_clone[
-                :, task_index * self.pose_dim : task_index * self.pose_dim + self.position_dim
-            ]
-            controlled_frame_in_env_origin_quat = actions_clone[
-                :, task_index * self.pose_dim + self.position_dim : (task_index + 1) * self.pose_dim
-            ]
-            controlled_frame_in_env_origin = math_utils.make_pose(
-                controlled_frame_in_env_origin_pos, math_utils.matrix_from_quat(controlled_frame_in_env_origin_quat)
+        else:
+            # The action tensor provides the desired pose of the controlled_frame with respect to the env origin frame
+            # But the pink IK controller expects the desired pose of the controlled_frame with respect to the base_link_frame
+            # So we need to transform the desired pose of the controlled_frame to be with respect to the base_link_frame
+
+            # Get the controlled_frame pose wrt to the env origin frame
+            all_controlled_frames_in_env_origin = []
+            # The contrllers for all envs are the same, hence just using the first one to get the number of variable_input_tasks
+            for task_index in range(len(self._ik_controllers[0].cfg.variable_input_tasks)):
+                controlled_frame_in_env_origin_pos = actions_clone[
+                    :, task_index * self.pose_dim : task_index * self.pose_dim + self.position_dim
+                ]
+                controlled_frame_in_env_origin_quat = actions_clone[
+                    :, task_index * self.pose_dim + self.position_dim : (task_index + 1) * self.pose_dim
+                ]
+                controlled_frame_in_env_origin = math_utils.make_pose(
+                    controlled_frame_in_env_origin_pos, math_utils.matrix_from_quat(controlled_frame_in_env_origin_quat)
+                )
+                all_controlled_frames_in_env_origin.append(controlled_frame_in_env_origin)
+            # Stack all the controlled_frame poses in the env origin frame. Shape is (num_tasks, num_envs , 4, 4)
+            all_controlled_frames_in_env_origin = torch.stack(all_controlled_frames_in_env_origin)
+
+            # Transform the controlled_frame to be with respect to the base_link_frame using batched matrix multiplication
+            controlled_frame_in_base_link_frame = math_utils.pose_in_A_to_pose_in_B(
+                all_controlled_frames_in_env_origin, math_utils.pose_inv(self.base_link_frame_in_env_origin)
             )
-            all_controlled_frames_in_env_origin.append(controlled_frame_in_env_origin)
-        # Stack all the controlled_frame poses in the env origin frame. Shape is (num_tasks, num_envs , 4, 4)
-        all_controlled_frames_in_env_origin = torch.stack(all_controlled_frames_in_env_origin)
 
-        # Transform the controlled_frame to be with respect to the base_link_frame using batched matrix multiplication
-        controlled_frame_in_base_link_frame = math_utils.pose_in_A_to_pose_in_B(
-            all_controlled_frames_in_env_origin, math_utils.pose_inv(self.base_link_frame_in_env_origin)
-        )
+            controlled_frame_in_base_link_frame_pos, controlled_frame_in_base_link_frame_mat = math_utils.unmake_pose(
+                controlled_frame_in_base_link_frame
+            )
 
-        controlled_frame_in_base_link_frame_pos, controlled_frame_in_base_link_frame_mat = math_utils.unmake_pose(
-            controlled_frame_in_base_link_frame
-        )
-
-        # Loop through each task and set the target
-        for env_index, ik_controller in enumerate(self._ik_controllers):
-            for task_index, task in enumerate(ik_controller.cfg.variable_input_tasks):
-                target = task.transform_target_to_world
-                target.translation = controlled_frame_in_base_link_frame_pos[task_index, env_index, :].cpu().numpy()
-                target.rotation = controlled_frame_in_base_link_frame_mat[task_index, env_index, :].cpu().numpy()
-                task.set_target(target)
+            # Loop through each task and set the target
+            for env_index, ik_controller in enumerate(self._ik_controllers):
+                for task_index, task in enumerate(ik_controller.cfg.variable_input_tasks):
+                    target = task.transform_target_to_world
+                    target.translation = controlled_frame_in_base_link_frame_pos[task_index, env_index, :].cpu().numpy()
+                    target.rotation = controlled_frame_in_base_link_frame_mat[task_index, env_index, :].cpu().numpy()
+                    task.set_target(target)
 
     def apply_actions(self):
         # start_time = time.time()  # Capture the time before the step
