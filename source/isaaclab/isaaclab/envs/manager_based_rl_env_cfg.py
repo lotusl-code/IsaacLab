@@ -84,3 +84,10 @@ class ManagerBasedRLEnvCfg(ManagerBasedEnvCfg):
 
     Please refer to the :class:`isaaclab.managers.CommandManager` class for more details.
     """
+
+    only_positive_rewards: bool = False
+    """Whether to clip negative rewards to zero. Defaults to False.
+
+    If True, the total reward is clipped to be non-negative. This is useful for tasks where the
+    agent can get stuck in a state with a large negative reward, which can lead to early termination.
+    """

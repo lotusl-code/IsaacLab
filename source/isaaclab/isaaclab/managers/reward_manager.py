@@ -64,6 +64,8 @@ class RewardManager(ManagerBase):
         # Buffer which stores the current step reward for each term for each environment
         self._step_reward = torch.zeros((self.num_envs, len(self._term_names)), dtype=torch.float, device=self.device)
 
+        self.only_positive_rewards = getattr(env.cfg, "only_positive_rewards", False)
+
     def __str__(self) -> str:
         """Returns: A string representation for reward manager."""
         msg = f"<RewardManager> contains {len(self._term_names)} active terms.\n"
@@ -154,6 +156,9 @@ class RewardManager(ManagerBase):
 
             # Update current reward for this step.
             self._step_reward[:, term_idx] = value / dt
+
+        if self.only_positive_rewards:
+            self._reward_buf = torch.nn.functional.leaky_relu(self._reward_buf, negative_slope=0.1)
 
         return self._reward_buf
 
